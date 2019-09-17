@@ -1,0 +1,1 @@
+scripts\zipalgo_win.exe Sclamy-playground-algo playground.zip
