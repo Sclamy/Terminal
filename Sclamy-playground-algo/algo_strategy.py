@@ -25,25 +25,47 @@ def cprint(message):
     return
 
 
-def find_breakthru(game_state):
-    friendly_edges = (game_state.game_map.get_edge_locations(game_state.game_map.BOTTOM_LEFT) +
-                      game_state.game_map.get_edge_locations(game_state.game_map.BOTTOM_RIGHT))
+def path_to_enemy_edge(game_state, path):
     hostile_edges = (game_state.game_map.get_edge_locations(game_state.game_map.TOP_RIGHT) +
                      game_state.game_map.get_edge_locations(game_state.game_map.TOP_LEFT))
+    if path is not None and path[-1] in hostile_edges:
+        pathToEdge = True
+    else:
+        pathToEdge = False
+
+    return pathToEdge
+
+
+def find_least_dmg_to_edge(game_state):
+    friendly_edges = (game_state.game_map.get_edge_locations(game_state.game_map.BOTTOM_LEFT) +
+                      game_state.game_map.get_edge_locations(game_state.game_map.BOTTOM_RIGHT))
 
     # game_state_sim = game_state
 
-    foundPath = False
+    bestPath = [1000, []]  # 1000 (max) damage, empty path
     for location in friendly_edges:
         path = game_state.find_path_to_edge(location)
-        if path[-1] in hostile_edges:
+        if path_to_enemy_edge(game_state, path):
             foundPath = True
-            break
+            damage = 0
+            for path_location in path:
+                # Get number of enemy destructors that can attack the final location and multiply by destructor damage
+                damage += len(game_state.get_attackers(path_location, 0)) * gamelib.GameUnit(DESTRUCTOR,
+                                                                                             game_state.config).damage
+                if damage < bestPath[0]:
+                    bestPath[0] = damage
+                    bestPath[1] = path
 
-    if foundPath:
-        cprint('Clear path to enemy edge')
+    if bestPath[0] < 1000:
+        cprint('Clear, ideal path to enemy edge')
+        cprint(f'{bestPath[1]}')
     else:
         cprint('No path to enemy edge')
+
+    return bestPath[1]
+
+
+def paths_to_score(game_state):
 
     return
 
@@ -162,19 +184,28 @@ class AlgoStrategy(gamelib.AlgoCore):
         # Now build reactive defenses based on where the enemy scored
         # self.build_reactive_defense(game_state)
 
-        if game_state.turn_number < 5:
+        if game_state.turn_number < 2:
             self.stall_with_scramblers(game_state)
-
-        best_location = least_damage_spawn_location(game_state)
+            self.stall_with_scramblers(game_state)
+            self.stall_with_scramblers(game_state)
 
         if game_state.get_resource(game_state.BITS, 1) > 15:
             self.stall_with_scramblers(game_state)
             self.stall_with_scramblers(game_state)
 
-        if game_state.get_resource(game_state.BITS) > 12 and game_state.get_resource(game_state.BITS, 1) <= 6:
-            game_state.attempt_spawn(PING, best_location, 1000)
+        best_path = find_least_dmg_to_edge(game_state)
+        if not best_path:
+            best_location = least_damage_spawn_location(game_state)
+            attackUnit = EMP
+        else:
+            best_location = best_path[0]
+            attackUnit = PING
 
-        find_breakthru(game_state)
+        if game_state.get_resource(game_state.BITS) > 12 and game_state.get_resource(game_state.BITS, 1) <= 6:
+            game_state.attempt_spawn(attackUnit, best_location, 1000)
+
+        # find_breakthru(game_state)
+        # paths_to_score(game_state)
 
 
     def build_reactive_defense(self, game_state):
@@ -265,9 +296,9 @@ class AlgoStrategy(gamelib.AlgoCore):
             # When parsing the frame data directly, 
             # 1 is integer for yourself, 2 is opponent (StarterKit code uses 0, 1 as player_index instead)
             if not unit_owner_self:
-                gamelib.debug_write("Got scored on at: {}".format(location))
+                # gamelib.debug_write("Got scored on at: {}".format(location))
                 self.scored_on_locations.append(location)
-                gamelib.debug_write("All locations: {}".format(self.scored_on_locations))
+                # gamelib.debug_write("All locations: {}".format(self.scored_on_locations))
 
 
 if __name__ == "__main__":
