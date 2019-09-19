@@ -20,6 +20,89 @@ Advanced strategy tips:
 """
 
 
+def cprint(message):
+    gamelib.debug_write(message)
+    return
+
+
+def find_breakthru(game_state):
+    friendly_edges = (game_state.game_map.get_edge_locations(game_state.game_map.BOTTOM_LEFT) +
+                      game_state.game_map.get_edge_locations(game_state.game_map.BOTTOM_RIGHT))
+    hostile_edges = (game_state.game_map.get_edge_locations(game_state.game_map.TOP_RIGHT) +
+                     game_state.game_map.get_edge_locations(game_state.game_map.TOP_LEFT))
+
+    # game_state_sim = game_state
+
+    foundPath = False
+    for location in friendly_edges:
+        path = game_state.find_path_to_edge(location)
+        if path[-1] in hostile_edges:
+            foundPath = True
+            break
+
+    if foundPath:
+        cprint('Clear path to enemy edge')
+    else:
+        cprint('No path to enemy edge')
+
+    return
+
+
+def least_damage_spawn_location(game_state):
+    """
+    This function will help us guess which location is the safest to spawn moving units from.
+    It gets the path the unit will take then checks locations on that path to
+    estimate the path's damage risk.
+    """
+    damages = []
+
+    friendly_edges = (game_state.game_map.get_edge_locations(game_state.game_map.BOTTOM_LEFT) +
+                      game_state.game_map.get_edge_locations(game_state.game_map.BOTTOM_RIGHT))
+    # friendly_edges = [[x, y+1] for x, y in friendly_edges]
+
+    # Get the damage estimate each path will take
+    for location in friendly_edges:
+        path = game_state.find_path_to_edge(location)
+        # gamelib.debug_write('path is {}'.format(path))
+        # path = game_state.find_path_to_edge([location[0], location[1] + 1])
+        # gamelib.debug_write('path is {}'.format(path))
+        # path = game_state.find_path_to_edge([location[0] + 1, location[1]])
+        # gamelib.debug_write('path is {}'.format(path))
+        damage = 0
+        if path is None or len(path) < 6:
+            damages.append(1000)
+            continue
+        for path_location in path:
+            # Get number of enemy destructors that can attack the final location and multiply by destructor damage
+            damage += len(game_state.get_attackers(path_location, 0)) * gamelib.GameUnit(DESTRUCTOR, game_state.config).damage
+        damages.append(damage)
+
+    # Now just return the location that takes the least damage
+    return friendly_edges[damages.index(min(damages))]
+
+
+def build_defences(game_state):
+    """
+    Build basic defenses using hardcoded locations.
+    Remember to defend corners and avoid placing units in the front where enemy EMPs can attack them.
+    """
+    # Useful tool for setting up your base locations: https://www.kevinbai.design/terminal-map-maker
+    # More community tools available at: https://terminal.c1games.com/rules#Download
+
+    # Place destructors that attack enemy units
+    destructor_locations = [[2, 12], [25, 12], [4, 10], [13, 10], [14, 10], [23, 10], [8, 9], [19, 9]]
+    # attempt_spawn will try to spawn units if we have resources, and will check if a blocking unit is already there
+    game_state.attempt_spawn(DESTRUCTOR, destructor_locations)
+
+    # Place filters to guide paths
+    filter_locations = [[0, 13], [1, 13], [2, 13], [25, 13], [26, 13], [27, 13], [3, 12], [4, 12], [23, 12],
+                        [24, 12], [4, 11], [5, 11], [13, 11], [14, 11], [22, 11], [23, 11], [5, 10], [6, 10],
+                        [8, 10], [9, 10], [12, 10], [15, 10], [18, 10], [19, 10], [21, 10], [22, 10], [9, 9],
+                        [10, 9], [17, 9], [18, 9]]
+
+    game_state.attempt_spawn(FILTER, filter_locations)
+
+
 class AlgoStrategy(gamelib.AlgoCore):
     def __init__(self):
         super().__init__()
@@ -75,54 +158,24 @@ class AlgoStrategy(gamelib.AlgoCore):
         If there are no stationary units to attack in the front, we will send Pings to try and score quickly.
         """
         # First, place basic defenses
-        self.build_defences(game_state)
+        build_defences(game_state)
         # Now build reactive defenses based on where the enemy scored
-        self.build_reactive_defense(game_state)
+        # self.build_reactive_defense(game_state)
 
-        # If the turn is less than 5, stall with Scramblers and wait to see enemy's base
         if game_state.turn_number < 5:
             self.stall_with_scramblers(game_state)
-        else:
-            # Now let's analyze the enemy base to see where their defenses are concentrated.
-            # If they have many units in the front we can build a line for our EMPs to attack them at long range.
-            if self.detect_enemy_unit(game_state, unit_type=None, valid_x=None, valid_y=[14, 15]) > 10:
-                self.emp_line_strategy(game_state)
-            else:
-                # They don't have many units in the front so lets figure out their least defended area
-                # and send Pings there.
 
-                # Only spawn Ping's every other turn
-                # Sending more at once is better since attacks can only hit a single ping at a time
-                if game_state.turn_number % 2 == 1:
-                    # To simplify we will just check sending them from back left and right
-                    ping_spawn_location_options = [[13, 0], [14, 0]]
-                    best_location = self.least_damage_spawn_location(game_state, ping_spawn_location_options)
-                    game_state.attempt_spawn(PING, best_location, 1000)
+        best_location = least_damage_spawn_location(game_state)
 
-                # Lastly, if we have spare cores, let's build some Encryptors to boost our Pings' health.
-                encryptor_locations = [[13, 2], [14, 2], [13, 3], [14, 3]]
-                game_state.attempt_spawn(ENCRYPTOR, encryptor_locations)
+        if game_state.get_resource(game_state.BITS, 1) > 15:
+            self.stall_with_scramblers(game_state)
+            self.stall_with_scramblers(game_state)
 
-    def build_defences(self, game_state):
-        """
-        Build basic defenses using hardcoded locations.
-        Remember to defend corners and avoid placing units in the front where enemy EMPs can attack them.
-        """
-        # Useful tool for setting up your base locations: https://www.kevinbai.design/terminal-map-maker
-        # More community tools available at: https://terminal.c1games.com/rules#Download
+        if game_state.get_resource(game_state.BITS) > 12 and game_state.get_resource(game_state.BITS, 1) <= 6:
+            game_state.attempt_spawn(PING, best_location, 1000)
 
-        # Place destructors that attack enemy units
-        destructor_locations = [[2, 12], [25, 12], [4, 10], [13, 10], [14, 10], [23, 10], [8, 9], [19, 9]]
-        # attempt_spawn will try to spawn units if we have resources, and will check if a blocking unit is already there
-        game_state.attempt_spawn(DESTRUCTOR, destructor_locations)
-        
-        # Place filters to guide paths
-        filter_locations = [[0, 13], [1, 13], [2, 13], [25, 13], [26, 13], [27, 13], [3, 12], [4, 12], [23, 12],
-                            [24, 12], [4, 11], [5, 11], [13, 11], [14, 11], [22, 11], [23, 11], [5, 10], [6, 10],
-                            [8, 10], [9, 10], [12, 10], [15, 10], [18, 10], [19, 10], [21, 10], [22, 10], [9, 9],
-                            [10, 9], [17, 9], [18, 9]]
+        find_breakthru(game_state)
 
-        game_state.attempt_spawn(FILTER, filter_locations)
 
     def build_reactive_defense(self, game_state):
         """
@@ -140,23 +193,22 @@ class AlgoStrategy(gamelib.AlgoCore):
         Send out Scramblers at random locations to defend our base from enemy moving units.
         """
         # We can spawn moving units on our edges so a list of all our edge locations
-        friendly_edges = game_state.game_map.get_edge_locations(game_state.game_map.BOTTOM_LEFT) + game_state.game_map.get_edge_locations(game_state.game_map.BOTTOM_RIGHT)
+        friendly_edges = (game_state.game_map.get_edge_locations(game_state.game_map.BOTTOM_LEFT) +
+                          game_state.game_map.get_edge_locations(game_state.game_map.BOTTOM_RIGHT))
         
         # Remove locations that are blocked by our own firewalls 
         # since we can't deploy units there.
         deploy_locations = self.filter_blocked_locations(friendly_edges, game_state)
         
         # While we have remaining bits to spend lets send out scramblers randomly.
-        while game_state.get_resource(game_state.BITS) >= game_state.type_cost(SCRAMBLER) and len(deploy_locations) > 0:
-            # Choose a random deploy location.
-            deploy_index = random.randint(0, len(deploy_locations) - 1)
-            deploy_location = deploy_locations[deploy_index]
-            
-            game_state.attempt_spawn(SCRAMBLER, deploy_location)
-            """
-            We don't have to remove the location since multiple information 
-            units can occupy the same space.
-            """
+        deploy_index = random.randint(0, len(deploy_locations) - 1)
+        deploy_location = deploy_locations[deploy_index]
+
+        game_state.attempt_spawn(SCRAMBLER, deploy_location)
+        """
+        We don't have to remove the location since multiple information 
+        units can occupy the same space.
+        """
 
     def emp_line_strategy(self, game_state):
         """
@@ -179,25 +231,6 @@ class AlgoStrategy(gamelib.AlgoCore):
         # Now spawn EMPs next to the line
         # By asking attempt_spawn to spawn 1000 units, it will essentially spawn as many as we have resources for
         game_state.attempt_spawn(EMP, [24, 10], 1000)
-
-    def least_damage_spawn_location(self, game_state, location_options):
-        """
-        This function will help us guess which location is the safest to spawn moving units from.
-        It gets the path the unit will take then checks locations on that path to 
-        estimate the path's damage risk.
-        """
-        damages = []
-        # Get the damage estimate each path will take
-        for location in location_options:
-            path = game_state.find_path_to_edge(location)
-            damage = 0
-            for path_location in path:
-                # Get number of enemy destructors that can attack the final location and multiply by destructor damage
-                damage += len(game_state.get_attackers(path_location, 0)) * gamelib.GameUnit(DESTRUCTOR, game_state.config).damage
-            damages.append(damage)
-        
-        # Now just return the location that takes the least damage
-        return location_options[damages.index(min(damages))]
 
     def detect_enemy_unit(self, game_state, unit_type=None, valid_x = None, valid_y = None):
         total_units = 0
