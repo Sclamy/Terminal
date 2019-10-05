@@ -36,7 +36,7 @@ def path_to_enemy_edge(game_state, path):
     return pathToEdge
 
 
-def find_least_dmg_to_edge(game_state):
+def find_least_dmg_to_edge(game_state, dmg_thresh):
     friendly_edges = (game_state.game_map.get_edge_locations(game_state.game_map.BOTTOM_LEFT) +
                       game_state.game_map.get_edge_locations(game_state.game_map.BOTTOM_RIGHT))
 
@@ -52,12 +52,12 @@ def find_least_dmg_to_edge(game_state):
                 # Get number of enemy destructors that can attack the final location and multiply by destructor damage
                 damage += len(game_state.get_attackers(path_location, 0)) * gamelib.GameUnit(DESTRUCTOR,
                                                                                              game_state.config).damage
-                if damage < bestPath[0]:
-                    bestPath[0] = damage
-                    bestPath[1] = path
+            if damage < bestPath[0] and damage <= dmg_thresh:
+                bestPath[0] = damage
+                bestPath[1] = path
 
     if bestPath[0] < 1000:
-        cprint('Clear, ideal path to enemy edge')
+        cprint(f'Clear, ideal path to enemy edge with {damage} damage')
         cprint(f'{bestPath[1]}')
     else:
         cprint('No path to enemy edge')
@@ -80,19 +80,49 @@ def least_damage_spawn_location(game_state):
 
     friendly_edges = (game_state.game_map.get_edge_locations(game_state.game_map.BOTTOM_LEFT) +
                       game_state.game_map.get_edge_locations(game_state.game_map.BOTTOM_RIGHT))
+    hostile_edges = (game_state.game_map.get_edge_locations(game_state.game_map.TOP_LEFT) +
+                     game_state.game_map.get_edge_locations(game_state.game_map.TOP_RIGHT))
     # friendly_edges = [[x, y+1] for x, y in friendly_edges]
 
     # Get the damage estimate each path will take
     for location in friendly_edges:
         path = game_state.find_path_to_edge(location)
-        # gamelib.debug_write('path is {}'.format(path))
-        # path = game_state.find_path_to_edge([location[0], location[1] + 1])
-        # gamelib.debug_write('path is {}'.format(path))
-        # path = game_state.find_path_to_edge([location[0] + 1, location[1]])
-        # gamelib.debug_write('path is {}'.format(path))
         damage = 0
-        if path is None or len(path) < 6:
+        if path is None or path[-1] not in hostile_edges:  # this needs verification...
             damages.append(1000)
+            continue
+        else:
+            cprint(f"This is a legit path, starting at {path[0]} and ending at {path[-1]}.")
+        for path_location in path:
+            # Get number of enemy destructors that can attack the final location and multiply by destructor damage
+            damage += len(game_state.get_attackers(path_location, 0)) * gamelib.GameUnit(DESTRUCTOR, game_state.config).damage
+        damages.append(damage)
+
+    # Now just return the location that takes the least damage
+    if min(damages) < 1000:
+        return friendly_edges[damages.index(min(damages))], min(damages)
+    else:
+        return None, 1000
+
+
+def most_damage_spawn_location(game_state):
+    """
+    This function will help us guess which location is the safest to spawn moving units from.
+    It gets the path the unit will take then checks locations on that path to
+    estimate the path's damage risk.
+    """
+    damages = []
+
+    friendly_edges = (game_state.game_map.get_edge_locations(game_state.game_map.BOTTOM_LEFT) +
+                      game_state.game_map.get_edge_locations(game_state.game_map.BOTTOM_RIGHT))
+    # friendly_edges = [[x, y+1] for x, y in friendly_edges]
+
+    # Get the damage estimate each path will take
+    for location in friendly_edges:
+        path = game_state.find_path_to_edge(location)
+        damage = 0
+        if path is None:
+            damages.append(0)
             continue
         for path_location in path:
             # Get number of enemy destructors that can attack the final location and multiply by destructor damage
@@ -100,7 +130,10 @@ def least_damage_spawn_location(game_state):
         damages.append(damage)
 
     # Now just return the location that takes the least damage
-    return friendly_edges[damages.index(min(damages))]
+    if max(damages) > 0:
+        return friendly_edges[damages.index(max(damages))], max(damages)
+    else:
+        return None, 0
 
 
 def build_defences(game_state):
@@ -111,18 +144,39 @@ def build_defences(game_state):
     # Useful tool for setting up your base locations: https://www.kevinbai.design/terminal-map-maker
     # More community tools available at: https://terminal.c1games.com/rules#Download
 
+    first_filter_locations = [[0, 13], [27, 13], [1, 13], [26, 13], [2, 13], [25, 13], [3, 12], [24, 12],
+                              [4, 11], [23, 11], [5, 10], [22, 10], [6, 11], [21, 11], [7, 10], [20, 10],
+                              [8, 9], [19, 9], [9, 8], [18, 8], [10, 7], [17, 7], [11, 6], [16, 6], [12, 6], [15, 6]
+                              ]
+    game_state.attempt_spawn(FILTER, first_filter_locations)
+    for filter_location in first_filter_locations:
+        thing = game_state.game_map[filter_location[0], filter_location[1]][0]
+        if thing and thing.unit_type == 'FILTER'and thing.stability <= 20:
+            game_state.attempt_remove(filter_location)
     # Place destructors that attack enemy units
-    destructor_locations = [[2, 12], [25, 12], [4, 10], [13, 10], [14, 10], [23, 10], [8, 9], [19, 9]]
-    # attempt_spawn will try to spawn units if we have resources, and will check if a blocking unit is already there
-    game_state.attempt_spawn(DESTRUCTOR, destructor_locations)
+    destructor_locations_0 = [[12, 5], [15, 5], [6, 10], [21, 10], [2, 12], [25, 12], [12, 4], [15, 4]]
+    for location in destructor_locations_0:
+        game_state.attempt_spawn(DESTRUCTOR, [location])
+        # game_state.attempt_spawn(FILTER, [[location[0], location[1] + 1]])
+
+    if game_state.get_resource(game_state.CORES) < 6:
+        return
+
+    if game_state.turn_number > 4:
+        encryptor_locations_0 = [[13, 2], [14, 2]]
+        game_state.attempt_spawn(ENCRYPTOR, encryptor_locations_0)
 
     # Place filters to guide paths
-    filter_locations = [[0, 13], [1, 13], [2, 13], [25, 13], [26, 13], [27, 13], [3, 12], [4, 12], [23, 12],
-                        [24, 12], [4, 11], [5, 11], [13, 11], [14, 11], [22, 11], [23, 11], [5, 10], [6, 10],
-                        [8, 10], [9, 10], [12, 10], [15, 10], [18, 10], [19, 10], [21, 10], [22, 10], [9, 9],
-                        [10, 9], [17, 9], [18, 9]]
+    # filter_locations = [[0, 13], [1, 13], [2, 13], [25, 13], [26, 13], [27, 13], [3, 12], [4, 12], [23, 12],
+    #                    [24, 12], [4, 11], [5, 11], [13, 11], [14, 11], [22, 11], [23, 11], [5, 10], [6, 10],
+    #                    [8, 10], [9, 10], [12, 10], [15, 10], [18, 10], [19, 10], [21, 10], [22, 10], [9, 9],
+    #                    [10, 9], [17, 9], [18, 9]]
+    # game_state.attempt_spawn(FILTER, filter_locations)
+    encryptor_locations = [[11, 3], [16, 3]]
+    game_state.attempt_spawn(ENCRYPTOR, encryptor_locations)
 
-    game_state.attempt_spawn(FILTER, filter_locations)
+    destructor_locations_2 = [[2, 11], [25, 11], [4, 9], [13, 9], [14, 9], [23, 9], [8, 8], [19, 8]]
+    game_state.attempt_spawn(DESTRUCTOR, destructor_locations_2)
 
 
 class AlgoStrategy(gamelib.AlgoCore):
@@ -148,8 +202,6 @@ class AlgoStrategy(gamelib.AlgoCore):
         # This is a good place to do initial setup
         self.scored_on_locations = []
 
-    
-        
 
     def on_turn(self, turn_state):
         """
@@ -163,7 +215,8 @@ class AlgoStrategy(gamelib.AlgoCore):
         gamelib.debug_write('Performing turn {} of your custom algo strategy'.format(game_state.turn_number))
         game_state.suppress_warnings(True)  # Comment or remove this line to enable warnings.
 
-        self.starter_strategy(game_state)
+        # self.starter_strategy(game_state)
+        self.khan(game_state)
 
         game_state.submit_turn()
 
@@ -171,6 +224,48 @@ class AlgoStrategy(gamelib.AlgoCore):
     NOTE: All the methods after this point are part of the sample starter-algo
     strategy and can safely be replaced for your custom algo.
     """
+
+    def khan(self, game_state):
+        # Start with 40 Cores, 5 Bits
+
+        # Offensive Defences  - Total cost, 40
+        pink_destructors_points = [[8, 7], [19, 7]]
+        pink_filters_points = [[0, 13], [1, 13], [2, 13], [3, 13], [24, 13], [25, 13], [26, 13], [27, 13], [3, 12],
+                               [4, 12], [23, 12], [24, 12], [4, 11], [5, 11], [22, 11], [23, 11], [6, 10], [21, 10],
+                               [6, 9], [7, 9], [20, 9], [21, 9], [7, 8], [8, 8], [19, 8], [20, 8], [9, 7], [18, 7]]
+        game_state.attempt_spawn(DESTRUCTOR, pink_destructors_points)
+        game_state.attempt_spawn(FILTER, pink_filters_points)
+        # game_state.attempt_spawn(ENCRYPTOR, pink_encryptors_points)
+
+        # Guidence Defences
+        # teal_filters_points = [[10, 10], [17, 10], [9, 9], [18, 9], [8, 8], [19, 8], [7, 7], [20, 7]]
+        # game_state.attempt_spawn(FILTER, teal_filters_points)
+
+        # Expansion Defences
+        blue_destructors_points = [[13, 6], [14, 6]]
+        blue_filters_points = [[13, 7], [14, 7], [12, 6], [15, 6]]
+        blue_encryptors_points = [[13, 4], [14, 4], [13, 5], [14, 5]]
+        game_state.attempt_spawn(DESTRUCTOR, blue_destructors_points)
+        game_state.attempt_spawn(FILTER, blue_filters_points)
+        game_state.attempt_spawn(ENCRYPTOR, blue_encryptors_points)
+
+        red_destructors_points = [[2, 12], [25, 12], [5, 10], [22, 10], [3, 11], [24, 11]]
+        game_state.attempt_spawn(DESTRUCTOR, red_destructors_points)
+
+        # Spawning
+        least_damage_spawn, least_damage = least_damage_spawn_location(game_state)
+        cprint(f"Least damage: {least_damage}")
+        if least_damage < 2:  # Gottem Case
+            game_state.attempt_spawn(PING, least_damage_spawn, 1000)
+
+        most_damage_spawn, most_damage = most_damage_spawn_location(game_state)
+        cprint(f"Most damage: {most_damage}")
+        # if most_damage > 1:  # can actually do damage
+        #    if game_state.get_resource(game_state.BITS) > 14:  # 2.3
+        #        game_state.attempt_spawn(EMP, most_damage_spawn, 1000)
+        if game_state.get_resource(game_state.BITS) > 14:  # 2.3
+            game_state.attempt_spawn(EMP, least_damage_spawn, 1000)
+
 
     def starter_strategy(self, game_state):
         """
@@ -184,26 +279,33 @@ class AlgoStrategy(gamelib.AlgoCore):
         # Now build reactive defenses based on where the enemy scored
         # self.build_reactive_defense(game_state)
 
-        if game_state.turn_number < 2:
-            self.stall_with_scramblers(game_state)
-            self.stall_with_scramblers(game_state)
-            self.stall_with_scramblers(game_state)
+        if game_state.turn_number < 3:  # First 3 turns
+            self.stall_with_scramblers(game_state, 1)
+            self.stall_with_scramblers(game_state, 1)
 
-        if game_state.get_resource(game_state.BITS, 1) > 15:
-            self.stall_with_scramblers(game_state)
-            self.stall_with_scramblers(game_state)
+        if game_state.get_resource(game_state.BITS, 1) > 20:  # Enemy has >20 resources (probably going to attack soon)
+            self.stall_with_scramblers(game_state, 3)
+            self.stall_with_scramblers(game_state, 3)
 
-        best_path = find_least_dmg_to_edge(game_state)
-        if not best_path:
-            best_location = least_damage_spawn_location(game_state)
-            attackUnit = EMP
-        else:
-            best_location = best_path[0]
-            attackUnit = PING
+        # if game_state.get_resource(game_state.BITS) > (5 + (game_state.turn_number / 10)) * 2.1:  # 2.3
+        if game_state.get_resource(game_state.BITS) > 14:  # 2.3
+            best_location = None
+            best_path_ping = find_least_dmg_to_edge(game_state, 5)
+            if best_path_ping:
+                attackUnit = PING
+                best_location = best_path_ping[0]
 
-        if game_state.get_resource(game_state.BITS) > 12 and game_state.get_resource(game_state.BITS, 1) <= 6:
-            game_state.attempt_spawn(attackUnit, best_location, 1000)
+            else:
+                best_path_emp = find_least_dmg_to_edge(game_state, 100)
+                if best_path_emp:
+                    attackUnit = EMP
+                    best_location = best_path_emp[0]
 
+            if best_location:
+                game_state.attempt_spawn(attackUnit, best_location, 1000)
+
+        if game_state.get_resource(game_state.BITS) > 20:  # 2.3
+            game_state.attempt_spawn(EMP, [13, 0], 1000)
         # find_breakthru(game_state)
         # paths_to_score(game_state)
 
@@ -219,7 +321,7 @@ class AlgoStrategy(gamelib.AlgoCore):
             build_location = [location[0], location[1]+1]
             game_state.attempt_spawn(DESTRUCTOR, build_location)
 
-    def stall_with_scramblers(self, game_state):
+    def stall_with_scramblers(self, game_state, numScramblers):
         """
         Send out Scramblers at random locations to defend our base from enemy moving units.
         """
@@ -235,7 +337,7 @@ class AlgoStrategy(gamelib.AlgoCore):
         deploy_index = random.randint(0, len(deploy_locations) - 1)
         deploy_location = deploy_locations[deploy_index]
 
-        game_state.attempt_spawn(SCRAMBLER, deploy_location)
+        game_state.attempt_spawn(SCRAMBLER, deploy_location, numScramblers)
         """
         We don't have to remove the location since multiple information 
         units can occupy the same space.
